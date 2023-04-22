@@ -352,3 +352,74 @@ unittest
         assert(sendPacket == clientBuffer.data);
     }
 }
+
+
+// システムコール呼び出し関数。druntimeに宣言が無いので追加
+extern(C) long syscall(long sysno, ...) @system nothrow @nogc;
+
+/++
+LinuxのAPIを直接利用したechoサーバー・クライアントの例です。
++/
+unittest
+{
+    version (linux)
+    {
+        // 利用するLinuxのモジュールをimportする
+        import core.sys.linux.unistd;
+        import core.sys.linux.fcntl;
+        import core.sys.linux.io_uring;
+        import core.stdc.errno;
+        import core.sys.linux.sys.socket;
+        import core.sys.linux.netinet.in_;
+
+        import std.exception : errnoEnforce, ErrnoException;
+
+        // io_uringのシステムコールのコード
+        version (Alpha)
+        {
+            // alpha環境だけ値が異なる
+            enum __NR_io_uring_setup = 535;
+            enum __NR_io_uring_enter = 536;
+            enum __NR_io_uring_register = 537;
+        }
+        else
+        {
+            enum __NR_io_uring_setup = 425;
+            enum __NR_io_uring_enter = 426;
+            enum __NR_io_uring_register = 427;
+        }
+
+        // io_uring関連のシステムコールを呼び出す関数を定義する。
+        // 将来的にはcore.sys.linuxに含まれるはず……。
+
+        int io_uring_register(int fd, uint opcode, void* arg, uint nr_args)
+        @system nothrow @nogc
+        {
+            return cast(int) syscall(__NR_io_uring_register, fd, opcode, arg, nr_args);
+        }
+
+        int io_uring_setup(uint entries, io_uring_params* p)
+        @system nothrow @nogc
+        {
+            return cast(int) syscall(__NR_io_uring_setup, entries, p);
+        }
+
+        int io_uring_enter(int fd, uint to_submit, uint min_complete, uint flags)
+        @system nothrow @nogc
+        {
+            return cast(int) syscall(__NR_io_uring_enter, fd, to_submit, min_complete, flags, null, 0);
+        }
+
+        // io_uringキューのエントリー数(深さ)
+        enum URING_ENTRIES = 1;
+
+        // デフォルトのパラメーターでio_uring生成
+        io_uring_params params;
+        immutable uringDescriptor = io_uring_setup(URING_ENTRIES, &params);
+        if (uringDescriptor < 0)
+        {
+            throw new ErrnoException("error: io_uring_setup", uringDescriptor);   
+        }
+        scope(exit) close(uringDescriptor);
+    }
+}
