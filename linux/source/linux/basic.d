@@ -353,9 +353,11 @@ unittest
     }
 }
 
-
-// システムコール呼び出し関数。druntimeに宣言が無いので追加
-extern(C) long syscall(long sysno, ...) @system nothrow @nogc;
+version (linux)
+{
+    // システムコール呼び出し関数。druntimeに宣言が無いので追加
+    extern(C) long syscall(long sysno, ...) @system nothrow @nogc;
+}
 
 /++
 LinuxのAPIを直接利用したechoサーバー・クライアントの例です。
@@ -371,8 +373,11 @@ unittest
         import core.stdc.errno;
         import core.sys.linux.sys.socket;
         import core.sys.linux.netinet.in_;
+        import core.sys.posix.sys.mman;
+        import core.sys.linux.sys.mman : MAP_POPULATE; // Linuxのほうにしか定義が無い
 
         import std.exception : errnoEnforce, ErrnoException;
+        import std.algorithm : max;
 
         // io_uringのシステムコールのコード
         version (Alpha)
@@ -421,5 +426,29 @@ unittest
             throw new ErrnoException("error: io_uring_setup", uringDescriptor);   
         }
         scope(exit) close(uringDescriptor);
+
+        // セットアップ結果のパラメーターから各キューサイズを計算する。
+        size_t submitQueueSize = params.sq_off.array + params.sq_entries * uint.sizeof;
+        size_t completionQueueSize = params.cq_off.cqes + params.cq_entries * io_uring_cqe.sizeof;
+
+        // SINGLE_MMAPに対応していれば単一のmmapで送信キュー・完了キューをマップできるので、
+        // サイズを同じにする。
+        if (params.features & IORING_FEAT_SINGLE_MMAP)
+        {
+            immutable maxSize = max(submitQueueSize, completionQueueSize);
+            submitQueueSize = maxSize;
+            completionQueueSize = maxSize;
+        }
+
+        // メモリマップ実行
+        auto submitQueuePointer = mmap(
+            null,
+            submitQueueSize,
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED | MAP_POPULATE,
+            uringDescriptor,
+            IORING_OFF_SQ_RING);
+        errnoEnforce(submitQueuePointer != MAP_FAILED);
+        scope(exit) munmap(submitQueuePointer, submitQueueSize);
     }
 }
